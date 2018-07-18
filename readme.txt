@@ -4,4 +4,4 @@ what happend
 hello world
 000000000000000000
 creating a new branch is quick
-
+creating a new branch is quick & simple
