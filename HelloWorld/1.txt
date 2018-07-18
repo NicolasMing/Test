@@ -1,0 +1,813 @@
+ #region  接口
+
+        /// <summary>
+        /// 短信发送
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public register_smscodeResponse telephoneSmsCheck(register_smscodeRequest request)
+        {
+            register_smscodeResponse res = new register_smscodeResponse();
+            Model.userconfig userConfig = new BLL.userconfig().loadConfig();
+            Hashtable returnTable = new Hashtable();
+            returnTable = new Hashtable();
+            returnTable["status"] = 0;
+
+            string smsTips = "mobileMarning";
+            string needCheckUnique = "";
+            qt.zccf_p2p.API.smsSdk.WebService smsSendSdk = new qt.zccf_p2p.API.smsSdk.WebService();
+            string uid = "SDK-BBX-010-20054";
+            string pwd = getMD5("SDK-BBX-010-20054c19^^5-7");
+            string result = smsSendSdk.balance(uid, pwd);
+            string mob = request.CellPhoneNumber;
+            // string imagecode = DTRequest.GetFormStringValue("imagecode", "");
+            Random rand = new Random(Guid.NewGuid().GetHashCode());
+            bool canSendSms = true;
+            if (canSendSms)
+            {
+                //检查是否重复提交
+                BLL.user_code codeBll = new BLL.user_code();
+                Model.user_code codeModel;
+                codeModel = codeBll.GetModel(mob, DTEnums.CodeEnum.TelVerify.ToString(), "n");
+                Model.users model = new BLL.users().GetModel1(request.CellPhoneNumber);
+                if (codeModel == null)
+                {
+                    int code = rand.Next(100000, 999999);
+                    Model.sms_template smsModel = new BLL.sms_template().GetModel(smsTips); //取得短信内容
+                    string strcode = Utils.Number(4); //随机验证码
+                    //替换标签
+                    string msgContent = smsModel.content;
+                    msgContent = msgContent.Replace("{webname}", "乐赢金服");
+                    msgContent = msgContent.Replace("{weburl}", "www.leyinglicai.cn");
+                    msgContent = msgContent.Replace("{webtel}", "");
+                    msgContent = msgContent.Replace("{code}", code.ToString());
+                    msgContent = msgContent.Replace("{user_name}", model == null ? "" : model.user_name);
+                    //发送短信
+                    string tipMsg = string.Empty;
+
+                    string andy = sms_helper.sendsms(mob, msgContent);
+
+                    codeModel = new Model.user_code();
+                    //写入数据库
+                    codeModel.user_id = -1;
+                    codeModel.user_name = mob;
+                    codeModel.type = DTEnums.CodeEnum.TelVerify.ToString();
+                    codeModel.str_code = code.ToString();
+                    codeModel.eff_time = DateTime.Now.AddSeconds(120);
+                    codeModel.add_time = DateTime.Now;
+                    codeBll.Add(codeModel);
+                    returnTable["status"] = 1;
+                }
+                else
+                {
+                    Simplify.Log.Logger.Default.Write("对象为空短信发生失败");
+                    returnTable["status"] = 0;
+                    returnTable["errorcode"] = 1;
+                }
+            }
+            res.ResponseStatus = ResponseStatus.success;
+            res.Message = "发送成功";
+            return res;
+        }
+
+        /// <summary>
+        /// 注册
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public registerResponse register(registerResquest request)
+        {
+            registerResponse res = new registerResponse();
+            try
+            {
+                BLL.users bll = new BLL.users();
+                Model.users model = new Model.users();
+                Model.MemberBasic Membermodel = new Model.MemberBasic();//用户基本信息
+                BLL.MemberBasic Memberbll = new BLL.MemberBasic();
+                //检查默认组别是否存在
+                Model.user_groups modelGroup = new BLL.user_groups().GetDefault();
+                string registerName = request.CellPhoneNumber;
+
+                string password = request.password;
+                string Referrer = "";
+                string telephone = request.CellPhoneNumber;
+                if (request.mobile != "" || request.mobile != null)
+                {
+                    //如果推荐人存在
+                    if (bll.ExistsMobile(request.mobile))
+                    {
+                        Referrer = request.mobile;
+                    }
+                }
+
+
+                if (bll.Exists(registerName))
+                {
+                    res.Message = "用户已经存在";
+                    res.ResponseStatus = ResponseStatus.failure;
+                    return res;
+                }
+
+                if (!getSessionVerifiedCode(telephone, request.code))
+                {
+                    res.Message = "验证码错误";
+                    res.ResponseStatus = ResponseStatus.failure;
+                    return res;
+                }
+
+
+
+                string guid = Guid.NewGuid().ToString();
+                //保存注册信息
+                model.group_id = modelGroup.id;
+                model.user_name = registerName;
+                model.nick_name = registerName;
+                model.salt = Utils.GetCheckCode(6); //获得6位的salt加密字符串
+                model.email = "";
+                model.mobile = telephone;
+                string md5password = Utils.MD5(password);//密码(MD5加密)
+                password = DESEncrypt.Encrypt(Utils.SHA1(md5password), model.salt);
+                model.password = password;
+                model.reg_time = DateTime.Now;
+                model.MemBas_MemberID = guid;
+                model.token = Utils.SHA1(model.MemBas_MemberID + DateTime.Now.Ticks);
+
+
+                if (!string.IsNullOrEmpty(Referrer))
+                {
+                    DataTable referrerDs = Memberbll.getMemBas_MemberID(Referrer);
+                    if (referrerDs != null && referrerDs.Rows.Count > 0 && Memberbll.getMemBas_MemberID(Referrer).Rows[0]["MemBas_MemberID"].ToString() != null)
+                    {
+                        string MemberReferrer = Memberbll.getMemBas_MemberID(Referrer).Rows[0]["MemBas_MemberID"].ToString();
+                        int memberrank = int.Parse(Memberbll.getMemBas_MemberID(Referrer).Rows[0]["MemBas_MemberRank"].ToString()) + 1;
+                        Membermodel.MemBas_RemMemberID = MemberReferrer;
+                        Membermodel.MemBas_MemberRank = memberrank;
+                    }
+                    else
+                    {
+                        Model.manager managermodel = new BLL.manager().GetModel(int.Parse(Referrer));
+                        if (managermodel != null)
+                        {
+                            Membermodel.MemBas_RemMemberID = Referrer;
+                            Membermodel.MemBas_MemberRank = 1;
+
+                        }
+                    }
+                }
+                Membermodel.MemBas_LoginPwdSalt = Utils.GetCheckCode(6);
+                Membermodel.MemBas_LoginPwd = password;
+                Membermodel.MemBas_CreateName = "前台会员";
+                Membermodel.MemBas_LoginName = registerName;
+                //Membermodel.MemBas_UserName = registerName;
+                Membermodel.MemBas_Email = "";
+                //Membermodel.MemBas_Email = context.Request.Params["basicEail"];
+                Membermodel.MemBas_CanInvest = true;
+                Membermodel.MemBas_MemberID = guid;
+                DateTime time = DateTime.Now;
+                Membermodel.MemBas_CreateDate = Utils.GetUnixTimestamp(time);
+                Membermodel.SysRol_ID = 4;
+                Membermodel.MemBas_Point = 0;//此用户注册成功后赠送积分10分
+                Membermodel.MemBas_CanInvest = true;
+                Membermodel.MemBas_CanLoan = true;
+                Membermodel.MemBas_MailVerified = false;
+                Membermodel.MemBas_MobileVerified = false;
+                Membermodel.MemBas_IDCardVerified = false;
+                Membermodel.MemBas_IsCompany = false;
+                Membermodel.MemBas_Mobile = telephone;
+                Membermodel.MemBas_Sex = null;
+                int rdl = bll.AddComplexUser(model, Membermodel);
+
+                //赠送积分金额
+                if (modelGroup.point > 0)
+                {
+                    model.id = rdl;
+                    //增加积分记录
+                    // new BLL.user_point_log().Add(model.id, model.user_name, modelGroup.point, "注册赠送积分", false);
+                }
+
+                if (rdl < 1)
+                {
+
+                    res.Message = "注册失败";
+                    res.ResponseStatus = ResponseStatus.failure;
+                    return res;
+
+                }
+                else
+                {
+
+                    if (request.mobile != "" || request.mobile != null)
+                    {
+                        //如果推荐人存在
+                        if (bll.ExistsMobile(request.mobile))
+                        {
+                            //送红包 50
+                            bll.redPacket(model.MemBas_MemberID, 50, 7, 0);
+
+                            Referrer = request.mobile;
+                        }
+                    }
+                    model.id = rdl;
+
+
+                    //写入登录日志
+                    new BLL.user_login_log().Add(model.id, model.user_name, "会员登录");
+                    // user_verify_email(context);
+                    upMemBas_MobileVerified(request.CellPhoneNumber);
+                    res.Message = "注册成功";
+                    res.ResponseStatus = ResponseStatus.success;
+                    return res;
+
+                }
+
+            }
+            catch (Exception e)
+            {
+                res.Message = "注册失败" + e.Message;
+                res.ResponseStatus = ResponseStatus.failure;
+                return res;
+            }
+
+        }
+
+        /// <summary>
+        /// 判断是否存在用户
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public registerResponse regiestExist(register_smscodeRequest request)
+        {
+            registerResponse res = new registerResponse();
+            try
+            {
+                BLL.users bll = new BLL.users();
+                if (
+                bll.Exists(request.CellPhoneNumber))
+                {
+                    res.Message = "用户已存在";
+                    res.ResponseStatus = ResponseStatus.failure;
+                    return res;
+                }
+                else
+                {
+                    res.Message = "用户可用";
+                    res.ResponseStatus = ResponseStatus.success;
+                    return res;
+                }
+            }
+            catch (Exception ex)
+            {
+                res.Message = "用户可用";
+                res.ResponseStatus = ResponseStatus.success;
+                return res;
+            }
+
+        }
+
+        /// <summary>
+        /// 新手红包
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public BaseResponse AddRedPack(register_smscodeRequest request)
+        {
+            #region 送红包
+            BaseResponse ar = new BaseResponse();
+            #region 根据CustomerID、Token判断用户登录合法性
+            //根据CustomerID、Token判断用户登录合法性
+            if (!CommClass.ValidCustomer(request.CellPhoneNumber, request.Token))
+            {
+                ar.ResponseStatus = ResponseStatus.failure;
+                ar.Message = "tokenfailure";
+                return ar;
+            }
+            #endregion
+
+            BLL.users userbll = new BLL.users();
+
+            Model.users ms = userbll.GetModel1(request.CellPhoneNumber);
+
+            int sum = 18;
+            Simplify.Log.Logger.Default.Write(ms.MemBas_MemberID + ",后台送红包," + sum);
+
+            BLL.users userBll = new BLL.users();
+            if (userBll.redPacket(ms.MemBas_MemberID, sum, 5, 0))
+            {
+                ar.Message = "成功";
+                ar.ResponseStatus = ResponseStatus.success;
+                return ar;
+            }
+            else
+            {
+                ar.Message = "失败";
+                ar.ResponseStatus = 0;
+                return ar;
+            }
+
+            #endregion
+        }
+        /// <summary>
+        /// 红包明细
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public BaseResponse<List<RedDetailResponse>> RedDetail(RedDetailRequest request)
+        {
+
+            BaseResponse<List<RedDetailResponse>> rr = new BaseResponse<List<RedDetailResponse>>();
+            List<RedDetailResponse> dd = new List<RedDetailResponse>();
+            RedDetailRequest rs = request;
+            try
+            {
+                #region 根据CustomerID、Token判断用户登录合法性
+                //根据CustomerID、Token判断用户登录合法性
+                if (!CommClass.ValidCustomer(request.phonenumber, request.Token))
+                {
+                    rr.ResponseStatus = ResponseStatus.failure;
+                    rr.Message = "tokenfailure";
+                    return rr;
+                }
+                #endregion
+                Model.users ms = new BLL.users().GetModel1(rs.phonenumber);
+                BLL.SystemBids sb = new BLL.SystemBids();
+                string sql = " select complete_time, status, value, payment_id" +
+              "  from [dbo].[dt_user_amount_log] where (type like '%红包%' or type like '%收到推荐%') and ";
+                string where = "";
+                if (rs.state == 0)
+                {
+                    where = "user_id = '" + ms.id + "'";
+                    sql = sql + where;
+                    DataSet ds = DbHelperSQL.Query(sql.ToString());
+                    for (int i = 0; i < ds.Tables[0].Rows.Count; i++)
+                    {
+                        RedDetailResponse detil = new RedDetailResponse();
+                        detil.reddetildate = ds.Tables[0].Rows[i]["complete_time"].ToString();
+                        if (ds.Tables[0].Rows[i]["status"].ToString() == "0")
+                        {
+                            detil.amount = "-" + ds.Tables[0].Rows[i]["value"].ToString();
+                            if (int.Parse(ds.Tables[0].Rows[i]["payment_id"].ToString()) != 0)
+                            {
+                                Model.SystemBids msb = sb.GetModel(int.Parse(ds.Tables[0].Rows[i]["payment_id"].ToString()));
+                                detil.reddetils = "投资" + msb.SysBid_Title;
+                            }
+
+                            dd.Add(detil);
+                        }
+                        else
+                        {
+                            detil.amount = ds.Tables[0].Rows[i]["value"].ToString();
+                            detil.reddetils = "收到红包";
+                            dd.Add(detil);
+                        }
+                    }
+
+                }
+                else if (rs.state == 1)
+                {
+                    where = "user_id = '" + ms.id + "'  and status = 0";
+                    sql = sql + where;
+                    DataSet ds = DbHelperSQL.Query(sql.ToString());
+                    for (int i = 0; i < ds.Tables[0].Rows.Count; i++)
+                    {
+                        RedDetailResponse detil = new RedDetailResponse();
+                        detil.reddetildate = ds.Tables[0].Rows[i]["complete_time"].ToString();
+                        detil.amount = "-" + ds.Tables[0].Rows[i]["value"].ToString();
+                        if (int.Parse(ds.Tables[0].Rows[i]["payment_id"].ToString()) != 0)
+                        {
+                            Model.SystemBids msb = sb.GetModel(int.Parse(ds.Tables[0].Rows[i]["payment_id"].ToString()));
+                            detil.reddetils = "投资" + msb.SysBid_Title;
+                            dd.Add(detil);
+                        }
+                    }
+                }
+                else
+                {
+                    where = "user_id = '" + ms.id + "'  and status = 1";
+                    sql = sql + where;
+                    DataSet ds = DbHelperSQL.Query(sql.ToString());
+                    for (int i = 0; i < ds.Tables[0].Rows.Count; i++)
+                    {
+                        RedDetailResponse detil = new RedDetailResponse();
+                        detil.reddetildate = ds.Tables[0].Rows[i]["complete_time"].ToString();
+                        detil.amount = ds.Tables[0].Rows[i]["value"].ToString();
+                        detil.reddetils = "收到红包";
+                        dd.Add(detil);
+
+                    }
+                }
+                rs.pagesize = rs.pagesize == 0 ? 10 : rs.pagesize;
+                rs.pageindex = rs.pageindex == 0 ? 1 : rs.pageindex;
+
+
+                rr.Data = dd.OrderByDescending(w => w.reddetildate).Skip((rs.pageindex - 1) * rs.pagesize).Take(rs.pagesize).ToList<RedDetailResponse>();
+                rr.Message = "成功";
+                rr.ResponseStatus = ResponseStatus.success;
+                return rr;
+            }
+            catch
+            {
+                BaseResponse<List<RedDetailResponse>> its = new BaseResponse<List<RedDetailResponse>>();
+                its.Data = null;
+                its.Message = "查询失败";
+                its.ResponseStatus = 0;
+                return its;
+
+            }
+
+        }
+
+
+        /// <summary>
+        /// 推荐人红包明细
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public BaseResponse<ReferrerRedDetailResponse> ReferrerRedDetail(ReferrerRedDetail request)
+        {
+
+            BaseResponse<ReferrerRedDetailResponse> rr = new BaseResponse<ReferrerRedDetailResponse>();
+            ReferrerRedDetailResponse data = new ReferrerRedDetailResponse();
+            data.money = 0;
+
+            List<RedDetailResponse> dd = new List<RedDetailResponse>();
+            ReferrerRedDetail rs = request;
+            try
+            {
+                #region 根据CustomerID、Token判断用户登录合法性
+                //根据CustomerID、Token判断用户登录合法性
+                if (!CommClass.ValidCustomer(request.phonenumber, request.Token))
+                {
+                    rr.ResponseStatus = ResponseStatus.failure;
+                    rr.Message = "tokenfailure";
+                    return rr;
+                }
+                #endregion
+                Model.users ms = new BLL.users().GetModel1(rs.phonenumber);
+                BLL.SystemBids sb = new BLL.SystemBids();
+                string sql = " select complete_time, status, value, payment_id,remark" +
+              "  from [dt_user_amount_log] where type like '%推荐红包%' and ";
+                string where = "";
+
+                where = "user_id = '" + ms.id + "'";
+                sql = sql + where;
+                DataSet ds = DbHelperSQL.Query(sql.ToString());
+                for (int i = 0; i < ds.Tables[0].Rows.Count; i++)
+                {
+                    RedDetailResponse detil = new RedDetailResponse();
+                    detil.reddetildate = ds.Tables[0].Rows[i]["complete_time"].ToString();
+                    if (ds.Tables[0].Rows[i]["status"].ToString() == "0")
+                    {
+
+                    }
+                    else
+                    {
+                        detil.amount = ds.Tables[0].Rows[i]["value"].ToString();
+                        data.money += decimal.Parse(detil.amount);
+                        detil.reddetils = ds.Tables[0].Rows[i]["remark"].ToString();
+                        dd.Add(detil);
+                    }
+                }
+
+                rs.pagesize = rs.pagesize == 0 ? 10 : rs.pagesize;
+                rs.pageindex = rs.pageindex == 0 ? 1 : rs.pageindex;
+
+
+                data.data = dd.OrderByDescending(w => w.reddetildate).Skip((rs.pageindex - 1) * rs.pagesize).Take(rs.pagesize).ToList<RedDetailResponse>();
+                rr.Data = data;
+                rr.Message = "成功";
+                rr.ResponseStatus = ResponseStatus.success;
+                return rr;
+            }
+            catch (Exception e)
+            {
+
+                rr.Data = null;
+                rr.Message = "查询失败;" + e.Message;
+                rr.ResponseStatus = 0;
+                return rr;
+
+            }
+
+        }
+
+        /// <summary>
+        /// 投标中的
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public BaseResponse<List<BiddingResponse>> Bidding(register_smscodeRequest request)
+        {
+            List<BiddingResponse> li = new List<BiddingResponse>();
+            register_smscodeRequest itr = request;
+            BaseResponse<List<BiddingResponse>> its = new BaseResponse<List<BiddingResponse>>();
+            try
+            {
+                #region 根据CustomerID、Token判断用户登录合法性
+                //根据CustomerID、Token判断用户登录合法性
+                if (!CommClass.ValidCustomer(request.CellPhoneNumber, request.Token))
+                {
+                    its.ResponseStatus = ResponseStatus.failure;
+                    its.Message = "tokenfailure";
+                    return its;
+                }
+                #endregion
+                BLL.SystemBidsInvest sbill = new BLL.SystemBidsInvest();
+                BLL.SystemBids sbbll = new BLL.SystemBids();
+                BLL.users userbll = new BLL.users();
+                Model.SystemBids sbis = new Model.SystemBids();
+                Model.users ms = userbll.GetModel1(itr.CellPhoneNumber);
+
+                string where = " MemBas_MemberID = '" + ms.MemBas_MemberID + "' order by SysBidInv_CreateDate desc";
+                List<Model.SystemBidsInvest> sb = sbill.GetModelList(where);//根据用户ID查数据
+                foreach (Model.SystemBidsInvest sbi in sb)
+                {
+                    sbis = sbbll.GetModel(sbi.SysBid_ID);
+                    if (sbis.SysBid_Published)
+                    {
+                        //SysBid_Complete=0 and SysBid_Floor-SysBid_Fund>0
+
+                        if (sbis.SysBid_Floor - sbis.SysBid_Fund > 0 && sbis.SysBid_Complete == false)
+                        {
+                            BiddingResponse i = new BiddingResponse();
+                            i.SysBid_ID = sbi.SysBid_ID;//标ID
+                            i.SysBid_Title = sbis.SysBid_Title;//标名字
+                            i.SysBidInv_Fund = sbi.SysBidInv_Fund;//投资的金额
+                            i.SysBid_Ratio = sbis.SysBid_Ratio;//年华利率
+                            i.SysBid_Floor = sbis.SysBid_Floor;//标的总金额
+                            i.SysBid_CheckCycle = sbis.SysBid_CheckCycle;//项目周期
+                            i.EndFund = Decimal.Parse(sbis.SysBid_Floor.ToString()) - Decimal.Parse(sbis.SysBid_Fund.ToString());
+
+                            //剩余投资金额
+                            li.Add(i);
+                        }
+                    }
+
+                }
+                its.Data = li;
+                its.Message = "";
+                its.ResponseStatus = ResponseStatus.success;
+                return its;
+            }
+            catch (Exception e)
+            {
+                its.Message = "查询错误" + e.Message;
+                its.ResponseStatus = ResponseStatus.failure;
+                return its;
+            }
+
+        }
+        /// <summary>
+        /// 还款中
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public BaseResponse<List<RepaymentsResponse>> Repayments(RepaymentsRequest request)
+        {
+
+            List<RepaymentsResponse> li = new List<RepaymentsResponse>();
+            BaseResponse<List<RepaymentsResponse>> its = new BaseResponse<List<RepaymentsResponse>>();
+            RepaymentsRequest itr = request;
+            try
+            {
+                #region 根据CustomerID、Token判断用户登录合法性
+                //根据CustomerID、Token判断用户登录合法性
+                if (!CommClass.ValidCustomer(request.CellPhoneNumber, request.Token))
+                {
+                    its.ResponseStatus = ResponseStatus.failure;
+                    its.Message = "tokenfailure";
+                    return its;
+                }
+                #endregion
+                BLL.SystemBidsInvest sbill = new BLL.SystemBidsInvest();
+                BLL.SystemBids sbbll = new BLL.SystemBids();
+                BLL.users userbll = new BLL.users();
+                Model.SystemBids sbis = new Model.SystemBids();
+                Model.users ms = userbll.GetModel1(itr.CellPhoneNumber);
+                BLL.SystemBids SystemBidsbll = new BLL.SystemBids();
+                int totalCount = 0;
+                string _where = "SystemBidsInvest.SysBid_ID>0  and SystemBidsInvest.MemBas_MemberID='" + ms.MemBas_MemberID + "'and SystemBids.SysBid_Success=1 and SystemBids.SysBid_Complete=0";
+                string _orderby = "SysBid_ID desc";
+                DataSet ds = SystemBidsbll.GetSystemBidsList(60, 1, _where, _orderby, out totalCount);
+
+                string where = " MemBas_MemberID = '" + ms.MemBas_MemberID + "' order by SysBidInv_CreateDate desc";
+                List<Model.SystemBidsInvest> sb = sbill.GetModelList(where);
+                foreach (Model.SystemBidsInvest sbi in sb)
+                {
+                    sbis = sbbll.GetModel(sbi.SysBid_ID);
+                    if (sbis.SysBid_Published)
+                    {
+
+                        if (sbis.SysBid_Floor - sbis.SysBid_Fund == 0 && sbis.SysBid_Complete == false)
+                        {
+
+                            RepaymentsResponse re = new RepaymentsResponse();
+                            re.bid = sbi.SysBid_ID;
+                            re.bidname = sbis.SysBid_Title;
+                            re.tou = sbi.SysBidInv_Fund;
+                            re.lixi = sbis.SysBid_Ratio;
+                            Model.SystemBids aa = sbbll.GetModel(sbi.SysBid_ID);//根据ID查数据
+
+                            if (ds.Tables.Count > 0 && ds.Tables[0].Rows.Count > 0)
+                            {
+
+                                for (int i = 0; i < ds.Tables[0].Rows.Count; i++)
+                                {
+                                    int bidID = int.Parse(ds.Tables[0].Rows[i]["SysBidinv_ID"].ToString());
+
+                                    string MemberID = ds.Tables[0].Rows[i]["SysBas_MemberID"].ToString();
+                                    DataTable dt = SystemBidsbll.GetSystemBidsListInfo("  a.SysBidinv_ID=" + bidID + " and a.MemBas_MemberID='" + ms.MemBas_MemberID + "'  ");
+                                    if (dt != null)
+                                    {
+                                        if (dt.Rows.Count > 0)
+                                        {
+                                            if (sbi.SysBidInv_ID.Equals(bidID))
+                                            {
+
+                                                re.daishou = dt.Rows[0]["waitRevenue"].ToString();
+                                                re.yishou = dt.Rows[0]["gotRevenue"].ToString();
+                                                re.zongqi = int.Parse(dt.Rows[0]["totalIssue"].ToString());
+                                                re.shengyu = int.Parse(dt.Rows[0]["waitIssue"].ToString());
+                                                string date = qt.zccf_p2p.Common.Utils.GetDateTimeFromUnix(aa.SysBid_BeginDate);//项目起息日
+                                                int xiqihuankuan = re.zongqi - re.shengyu + 1;
+                                                re.date = sbbll.GetNextPayTimeByBid_id(aa.SysBid_ID).ToString("yyyy年MM月dd日");
+                                                li.Add(re);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                itr.pagesize = itr.pagesize == 0 ? 10 : itr.pagesize;
+                itr.pageindex = itr.pageindex == 0 ? 1 : itr.pageindex;
+                its.Data = li.Skip((itr.pageindex - 1) * itr.pagesize).Take(itr.pagesize).ToList<RepaymentsResponse>(); ;
+                its.Message = "成功";
+                its.ResponseStatus = ResponseStatus.success;
+                return its;
+
+
+            }
+            catch (Exception e)
+            {
+                BaseResponse<List<RepaymentsResponse>> aa = new BaseResponse<List<RepaymentsResponse>>();
+                aa.Message = e.ToString();
+                aa.ResponseStatus = 0;
+                return aa;
+            }
+        }
+        /// <summary>
+        /// 已结清
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public BaseResponse<List<RepaymentResponse>> Repayment(register_smscodeRequest request)
+        {
+            BaseResponse<List<RepaymentResponse>> its = new BaseResponse<List<RepaymentResponse>>();
+            #region 根据CustomerID、Token判断用户登录合法性
+            //根据CustomerID、Token判断用户登录合法性
+            if (!CommClass.ValidCustomer(request.CellPhoneNumber, request.Token))
+            {
+                its.ResponseStatus = ResponseStatus.failure;
+                its.Message = "tokenfailure";
+                return its;
+            }
+            #endregion
+            List<RepaymentResponse> li = new List<RepaymentResponse>();
+            BLL.SystemBidsInvest sbill = new BLL.SystemBidsInvest();
+            BLL.SystemBids sbbll = new BLL.SystemBids();
+            BLL.users userbll = new BLL.users();
+
+            Model.SystemBids sbis = new Model.SystemBids();
+            register_smscodeRequest itr = request;
+
+            Model.users ms = userbll.GetModel1(itr.CellPhoneNumber);
+
+            string where = " MemBas_MemberID = '" + ms.MemBas_MemberID + "' order by SysBidInv_CreateDate desc";
+            List<Model.SystemBidsInvest> sb = sbill.GetModelList(where);//根据用户ID查数据
+            foreach (Model.SystemBidsInvest sbi in sb)
+            {
+                sbis = sbbll.GetModel(sbi.SysBid_ID);
+                if (sbis.SysBid_Published)
+                {
+                    //SysBid_Complete=0 and SysBid_Floor-SysBid_Fund>0
+
+                    if (sbis.SysBid_Floor - sbis.SysBid_Fund == 0 && sbis.SysBid_Complete == true)
+                    {
+                        RepaymentResponse i = new RepaymentResponse();
+                        i.SysBid_ID = sbi.SysBid_ID;
+                        i.SysBid_Title = sbis.SysBid_Title;
+                        i.SysBidInv_Fund = sbi.SysBidInv_Fund;
+                        // 修改 
+                        i.income = Math.Round(sbi.SysBidInv_Fund / 12 * sbis.SysBid_CheckCycle * Decimal.Parse((sbis.SysBid_Ratio / 100).ToString()), 2);
+                        i.date = qt.zccf_p2p.Common.Utils.GetDateTimeFromUnix(sbis.SysBid_EndDate);//项目还款日
+                        li.Add(i);
+                    }
+                }
+            }
+            its.Data = li;
+            its.Message = "";
+            its.ResponseStatus = ResponseStatus.success;
+            return its;
+        }
+        /// <summary>
+        /// 公告
+        /// </summary>
+        /// <returns></returns>
+        [HttpPost]
+        public BaseResponse<List<NewRseponse>> NewList()
+        {
+
+            BLL.article ba = new BLL.article();
+
+            BaseResponse<List<NewRseponse>> ns = new BaseResponse<List<NewRseponse>>();
+            List<NewRseponse> new1 = new List<NewRseponse>();
+            //select TOP 5 *from [dt_article] where category_id = 142  order by add_time desc 
+            DataSet ds = new DataSet();
+            ds = ba.GetList1();
+            foreach (DataRow dr in ds.Tables[0].Rows)
+            {
+
+                NewRseponse nes = new NewRseponse();
+                nes.title = dr["title"].ToString();
+                nes.context = dr["content"].ToString();
+                nes.createtime = dr["add_time"].ToString();
+                new1.Add(nes);
+            }
+            ns.Message = "成功";
+            ns.ResponseStatus = ResponseStatus.success;
+            ns.Data = new1;
+            return ns;
+        }
+        /// <summary>
+        /// 账单
+        /// </summary>
+        /// <param name="request"></param>
+        /// <returns></returns>
+        [HttpPost]
+        public BaseResponse<List<BillListRseponse>> BidList(RepaymentsRequest request)
+        {
+            BaseResponse<List<BillListRseponse>> ss = new BaseResponse<List<BillListRseponse>>();
+            try
+            {
+                #region 根据CustomerID、Token判断用户登录合法性
+                //根据CustomerID、Token判断用户登录合法性
+                if (!CommClass.ValidCustomer(request.CellPhoneNumber, request.Token))
+                {
+                    ss.ResponseStatus = ResponseStatus.failure;
+                    ss.Message = "tokenfailure";
+                    return ss;
+                }
+                #endregion
+                RepaymentsRequest sr = request;
+
+                BLL.users userbll = new BLL.users();
+                Model.users ms = userbll.GetModel1(sr.CellPhoneNumber);
+                string where = " syscurcom_transmode in (1,2,3,101,0,9,6,4,5,11,12,13,10,301,8,15,16,17,19,20,22,402) and  ( (SysCurCom_PayMemberID='" +
+                    ms.MemBas_MemberID + "' and syscurcom_transmode<>0) or SysCurCom_ReceiveMemberID='" + ms.MemBas_MemberID + "') and (SysCurCom_Fund<>0) ";
+                string orderby = "syscurcom_createdate  desc";
+                int totalCount = 0;
+                List<BillListRseponse> bil = new List<BillListRseponse>();
+                BLL.SystemCurrencyCommunication bll = new BLL.SystemCurrencyCommunication();
+                DataSet ds = bll.GetList(sr.pagesize, sr.pageindex, where, orderby, out totalCount);
+                int canpage = totalCount % sr.pagesize == 0 ? totalCount / sr.pagesize : ((totalCount / sr.pagesize) + 1);
+                if (canpage < sr.pageindex)
+                {
+
+                }
+                else
+                {
+                    foreach (DataRow dr in ds.Tables[0].Rows)
+                    {
+                        BillListRseponse bill = new BillListRseponse();
+                        bill.date = Utils.GetDateTimeFromUnix(long.Parse(dr["syscurcom_createdate"].ToString())).ToString();
+                        bill.type = ((BidEnums.Currency_TransMode)int.Parse((dr["syscurcom_transmode"] ?? "0").ToString())).ToString();
+                        bill.amount = getTradeType(dr["syscurcom_transmode"].ToString()) * System.Math.Abs((decimal)dr["syscurcom_fund"]);
+                        bil.Add(bill);
+
+                    }
+                }
+                ss.ResponseStatus = ResponseStatus.success;
+                ss.Message = "成功";
+                ss.Data = bil;
+                return ss;
+            }
+            catch
+            {
+
+                ss.ResponseStatus = 0;
+                ss.Message = "查询失败";
+                return ss;
+
+            }
+        }
+        #endregion
